@@ -6,9 +6,12 @@ from database import SessionLocal, engine
 import models
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine
+import stripe
 
 
 app = FastAPI()
+
+stripe.api_key = "sk_test_51PGPJaSEcKlzWgP0w7EhtXqVPr0J1f6T3GgihxqEIizUowzuw0l9F3mOZ69erognb2Eli3YLomOtehrNhsSvTNUP00kkmQnuuy"
 
 @app.get('/')
 async def check():
@@ -27,17 +30,6 @@ app.add_middleware(
 )
 
 
-class TransactionBase(BaseModel):
-    amount: float
-    category: str
-    description: str
-    is_income: bool
-    date: str
-
-class TransactionModel(TransactionBase):
-    id: int
-
-
 class PatientBase(BaseModel):
     name: str
     age: str
@@ -47,6 +39,13 @@ class PatientBase(BaseModel):
 
 class PatientModel(PatientBase):
     id: int
+
+
+class PaymentRequest(BaseModel):
+    amount: int
+    user_name: str
+    user_id: int
+    doctor_name: str
 
 
 def get_db():
@@ -60,22 +59,6 @@ def get_db():
 db_dependency = Annotated[Session, Depends(get_db)]
 
 models.Base.metadata.create_all(bind=engine)
-
-
-@app.post("/transactions/", response_model=TransactionModel)
-async def create_transaction(transaction: TransactionBase, db: db_dependency):
-    print('he')
-    db_transaction = models.Transaction(**transaction.model_dump())
-    db.add(db_transaction)
-    db.commit()
-    db.refresh(db_transaction)
-    return db_transaction
-
-
-@app.get("/transactions/", response_model=List[TransactionModel])
-async def read_transactions(db: db_dependency, skip: int=0, limit: int=100):
-    transactions = db.query(models.Transaction).offset(skip).limit(limit).all()
-    return transactions
 
 
 @app.post("/patients/", response_model=PatientModel)
@@ -94,15 +77,74 @@ async def read_patients(db: db_dependency, skip: int=0, limit: int=100):
     return patients
 
 
+# This function creates a product and price in your Stripe dashboard
+def create_product_and_price(amount, patient_name):
+    try:
+        product = stripe.Product.create(
+            name= patient_name,
+            description="Description"
+        )
+
+        price = stripe.Price.create(
+            product=product.id,
+            unit_amount=amount,
+            currency="usd"
+        )
+
+        return product.id, price.id
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+def save_payment_link(db: Session, user_id: int, payment_link: str, amount: int, doctor_name: str):
+    db_payment_link = models.PaymentLink(user_id=user_id, payment_link=payment_link, amount=amount, doctor_name=doctor_name)
+    db.add(db_payment_link)
+    db.commit()
+    db.refresh(db_payment_link)
+    return db_payment_link
 
 
+def get_payment_links(db: Session):
+
+    return db.query(models.PaymentLink).all()
 
 
+def get_user_payment_links(db: Session, user_id: int):
+    return db.query(models.PaymentLink).filter(models.PaymentLink.user_id == user_id).all()
 
 
+@app.post("/create_payment_link/", response_model=dict)
+async def create_payment_link(db:db_dependency, payment_request: PaymentRequest):
+    try:
+        product_id, price_id = create_product_and_price(payment_request.amount, payment_request.user_name)
+
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price": price_id,
+                    "quantity": 1,
+                },
+            ],
+            mode="payment",
+            success_url="https://example.com/success",
+            cancel_url="https://example.com/cancel",
+        )
+        payment_link = session.url
+        saved_payment_link = save_payment_link(db=db, user_id=payment_request.user_id, payment_link=payment_link, amount=payment_request.amount
+                                               , doctor_name=payment_request.doctor_name)  # Change the user_id as needed
+
+        return {"payment_link": saved_payment_link.payment_link}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/payment_links/", response_model=List[str])
+async def get_all_payment_links(db: db_dependency):
+    payment_links = get_payment_links(db)
+    return [payment_link.payment_link for payment_link in payment_links]
 
 
-
-
+@app.get("/user_payment_links/{user_id}", response_model=List[str])
+async def get_user_payment_links_endpoint(user_id: int, db: db_dependency):
+    payment_links = get_user_payment_links(db, user_id)
+    return [payment_link.payment_link for payment_link in payment_links]

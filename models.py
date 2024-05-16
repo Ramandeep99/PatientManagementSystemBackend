@@ -12,6 +12,7 @@ class Transaction(Base):
     is_income = Column(Boolean)
     date = Column(String)
 
+
 class Patient(Base):
     __tablename__ = 'patients'
 
@@ -21,3 +22,12 @@ class Patient(Base):
     contact_num = Column(String)
     date_of_birth = Column(String)
 
+
+class PaymentLink(Base):
+    __tablename__ = "payment_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer)
+    payment_link = Column(String)
+    amount = Column(Integer)
+    doctor_name = Column(String)
